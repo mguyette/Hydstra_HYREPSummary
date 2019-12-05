@@ -12,6 +12,9 @@ hy <- hy %>%
     filter(!grepl("--", V1) & !grepl("HYREP.PERIOD", V1) &
                !grepl("Var", V1) & V1 != "")
 
+str_detect("Does this contain --","--|HYREP.PERIOD|Var")
+grepl("--|HYREP.PERIOD|Var", "Does this contain --")
+
 ## Create new, empty, variables
 hy$Site <- hy$Variable <- hy$StartDate <- hy$EndDate <- NA
 
@@ -22,6 +25,24 @@ for(i in 1:nrow(hy)) {
                                    regexpr("\\d{8}", hy$V1[i]))
     }
 }
+
+
+hy <- hy %>% 
+    mutate(Variable = str_extract(V1, "^\\d+\\.\\d+"),
+           StartDate = str_extract(V1, "\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}"),
+           EndDate = as.character(data.frame(str_extract_all(V1, "\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}"))[2,]))
+library(lubridate)
+
+hm_mdy(str_extract_all("227.10  Elev. (feet NAVD88)  Continuous     15:00_07/01/2008  12:00_11/02/2018   10.34 Years         0%",
+                "\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}")[[1]][2])
+
+str_extract("227.10  Elev. (feet NAVD88)  Continuous     15:00_07/01/2008  12:00_11/02/2018   10.34 Years         0%",
+            "\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}.*?\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}")[1]
+
+
+
+
+
 
 ## Fill down the Hydron ID to associate the variables
 ## with the appropriate Hydron ID
@@ -72,6 +93,16 @@ hy_sum$Event <- NA
 for(i in 1:nrow(hy_sum)) {
     hy_sum$Event[i] <- paste(as.character(var_xwalk$Event.Type[var_xwalk$Var == hy_sum$Var[i]]), collapse = ";", sep = " ")
 }
+
+
+hy_sum <- hy_sum %>% 
+    mutate(Event = paste(as.character(var_xwalk$Event.Type[var_xwalk$Var == Var]),
+                         collapse = ";", sep = " "))
+hy_sum %>% 
+    gather(key = "")
+
+
+
 
 hy_sum <- hy_sum %>% 
     group_by(Site, Event) %>% 

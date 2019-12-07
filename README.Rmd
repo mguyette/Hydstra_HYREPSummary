@@ -5,103 +5,154 @@ always_allow_html: true
 
 ```{r setup, include = F}
 knitr::opts_chunk$set(echo = TRUE)
+library(pander)
 ```
 
 ```{r, include = F}
-library(dplyr)
-library(tidyr)
-library(stringr)
-library(tibble)
+library(tidyverse)
 ```
 
 
-I was trying to get the period of record for data in the St. Johns River Water Management District's Hydstra database, which houses hydrologic data.  I found the report type HYREP PERIOD, which produces an output that contains the period of record information I needed.  However, it was not in a convenient format to allow for easy joining to other tables in Oracle-based tables.  This project steps through the data cleaning process I went through to get the data into a usable format in R.
+I was trying to get the period of record for data in the St. Johns River Water Management District's Hydstra database, which houses hydrologic data.  I found the report type HYREP PERIOD, which produces an output that contains the period of record information I needed.  However, it was not in a convenient format to allow for easy joining to other Oracle-based tables.
+
+This project steps through the data cleaning process I used to get the data into a usable format in R.  I include brief snapshots (a few rows) of the data frames to illustrate each of the cleaning steps.
 
 ## HYREP PERIOD data output
 
-The HYREP PERIOD report produces an output that would be very good on a small scale (i.e., looking at only a few stations at a time):
+The HYREP PERIOD report produces an output that would be very good on a small scale (i.e., looking at only a few stations at a time).  
 
 ![](images/HYREP_PERIOD_output.png)
 
-## 
+With hundreds of stations, it made more sense to reformat this output to extract all of the relevant data into a table structure.  There is a site identifier in the line above each block of data, and it is important that this information is linked to the data.  Additionally, there are many rows that are not needed.
+
+## Importing the data
+
+With unstructured data like this, the **read_lines** function from the **readr** package loads the file line by line.  The text file contains many empty rows, so setting the **skip_empty_rows** argument to TRUE removes these rows.  Wrapping **read_lines** in **data.frame** ensures that we start working with table-based data right away.
+
 ```{r}
-# Load text file exported from HYREP PERIOD
-hy <- data.frame(V1 = readLines("HY_POR_WATERCAT.txt", skipNul = T))
-head(hy, 10)
+hy <- data.frame(V1 = read_lines("HY_POR_WATERCAT.txt", skip_empty_rows = T))
 ```
 
-## Remove unnecessary lines and whitespace
+```{r, echo = F}
+pander(head(hy, 10), style = "rmarkdown", split.tables = Inf)
+```
+
+## Cleaning the data  
+
+### Remove unnecessary rows
+
+There are a number of lines that do not contain any data of interest.  These lines include the strings "--", "HYREP.PERIOD", "Var", "dup/", or "Index".  The **grepl** function searches for any of these strings, and the **filter** function in the **dplyr** package allows us to omit any of these lines.  In addition, the **str_trim** function in the **stringr** package strips whitespace from the start and end of each line.
 ```{r}
 hy <- hy %>% 
-    filter(!grepl("--|HYREP.PERIOD|Var|dup/|Index", V1), V1 != "") %>% 
+    filter(!grepl("--|HYREP.PERIOD|Var|dup/|Index", V1)) %>% 
     mutate(V1 = str_trim(V1))
-head(hy, 10)
 ```
 
-## New Site variable, filling down
+```{r, echo = F}
+pander(head(hy, 10), style = "rmarkdown", split.tables = Inf)
+```
+
+### Create a Site column
+
+The structure of the data is now a line with information about the site followed by one or more lines of data.  The site designator is an eight digit number included in each line above the data blocks.  The **str_extract** function from **stringr** can be used to extract those eight consecutive digits using a regular expression.  The **fill** function from the **tidyr** package fills down the values in the Site column so that each data row is associated with the correct Site. Once the Site variable is extracted, the rows containing the string "File" can be omitted.
 ```{r}
 hy <- hy %>% 
-    mutate(Site = str_extract(V1, "\\d{8}"))
-hy <- fill(hy, Site)
+    mutate(Site = str_extract(V1, "\\d{8}")) %>% 
+    select(Site, V1) %>% 
+    fill(Site) %>% 
+    filter(!grepl("File", V1))
 ```
 
+```{r, echo = F}
+pander(head(hy), style = "rmarkdown", split.tables = Inf)
+```
 
+### Create additional columns
 
-Extract the variable, start date, and end date from the Hydstra output
-Omit all subvariables except 0.10 and 0.14
-Omit variables 104 (Static Head), 252 (X-Section Area), 551 (Barometric pressure)
+Additional columns can be created by extracting pieces of the V1 column using **str_extract** and regular expressions.  Only some of the variables and subvariables needed to be retained, so these can be filtered out.
+
 ```{r}
 hy <- hy %>% 
     mutate(Variable = str_extract(V1, "^\\d+\\.\\d+"),
            StartDate = as.POSIXct(str_extract(V1, "\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}"),
-                               format = "%H:%M_%m/%d/%Y", tz = "EST"),
+                                  format = "%H:%M_%m/%d/%Y", tz = "EST"),
            EndDate = as.POSIXct(str_sub(str_extract(V1, "\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4}.*?(\\d{2}\\:\\d{2}\\_\\d{2}/\\d{2}/\\d{4})"), -16),
                                 format = "%H:%M_%m/%d/%Y", tz = "EST"),
            Var = as.numeric(str_extract(Variable, ".*(?=\\.)")),
-           SubVar = as.numeric(str_extract(Variable, "(\\.[^\\.]+)$")
-           )) %>% 
-    filter(SubVar %in% c(0.1, 0.14), !(Var %in% c(104, 252, 551)))
+           SubVar = as.numeric(str_extract(Variable, "(\\.[^\\.]+)$"))) %>% 
+    filter(SubVar %in% c(0.1, 0.14), !(Var %in% c(104, 229, 252, 300, 551, 2327))) %>% 
+    select(Site, Variable, Var, SubVar, StartDate, EndDate, V1)
 ```
 
-Summarize by Site and variable
+```{r, echo = F}
+pander(head(hy), style = "rmarkdown", split.tables = Inf)
+```
+
+## Summarize the data  
+
+### Group rows
+
+I was interested in the period of record for each variable and site combination, so the **group_by** and **summarize** functions from **dplyr** can be used to extract the earliest start date and the latest end date.
 ```{r}
 hy_sum <- hy %>% 
     group_by(Site, Var) %>% 
     summarize(Start = min(StartDate), End = max(EndDate))
 ```
 
-
-
-Read in Event Type Hydstra Variable Crosswalk table
-
-```{r}
-var_xwalk <- read.csv("Event_Var_Xwalk.csv")
+```{r, echo = F}
+pander(head(hy_sum), style = "rmarkdown", split.tables = Inf)
 ```
 
+### Add Event column
+
+The database I needed to join to these data lists variables as text-based Event Types, as shown in this crosswalk table.
 
 ```{r}
+var_xwalk <- read_csv("Event_Var_Xwalk.csv", col_types = "cd")
+```
+
+```{r, echo = F}
+pander(var_xwalk[order(var_xwalk$Var),], style = "rmarkdown", split.tables = Inf,
+       row.names = F)
+```
+
+The crosswalk table can be used to create an Event column that holds the Event Types.  Because there are multiple possible event types for each variable, the first step is to include all possible event types in the Event column.
+
+```{r, warning = F}
 hy_sum <- hy_sum %>% 
-    mutate(Event = paste(as.character(var_xwalk$Event.Type[var_xwalk$Var == Var]),
+    mutate(Event = paste(as.character(unique(var_xwalk$`Event Type`[var_xwalk$Var == Var])),
                          collapse = ";", sep = " "))
 ```
 
-hy_sum$Event <- NA
-for(i in 1:nrow(hy_sum)) {
-    hy_sum$Event[i] <- paste(as.character(var_xwalk$Event.Type[var_xwalk$Var == hy_sum$Var[i]]), collapse = ";", sep = " ")
-}
+```{r, echo = F}
+pander(head(hy_sum), style = "rmarkdown", split.tables = Inf)
+```
 
-hy_sum <- hy_sum %>% 
-    group_by(Site, Event) %>% 
-    summarize(Start = min(Start), End = max(End))
+When multiple event types are present, these can be split apart using the base **strsplit** function, and then each separate event type can be in its own row using the **unnest** function from **tidyr**.
 
-
+```{r}
 hy_sum <- hy_sum %>% 
     mutate(Event = strsplit(as.character(Event), ";")) %>%
     unnest(Event)
+```
 
+```{r, echo = F}
+pander(head(hy_sum), style = "rmarkdown", split.tables = Inf)
+```
+
+### Group rows
+
+Finally, I can summarize over each Site and Event combination to get the period of record of interest.
+
+```{r}
 hy_sum <- hy_sum %>% 
     group_by(Site, Event) %>% 
     summarize(Start = min(Start), End = max(End))
+```
 
+```{r, echo = F}
+pander(head(hy_sum), style = "rmarkdown", split.tables = Inf)
+```
 
+The resulting data frame can be joined with Oracle tables containing matching Site and Event fields.
 
